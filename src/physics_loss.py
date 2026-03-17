@@ -31,9 +31,13 @@ class PhysicalConstraintsLoss(nn.Module):
         If they result in negative values, we penalize the network.
         
         Note: Since we are in the scaled space (RobustScaler), we ideally want this physical
-        constraint in unscaled space. For a pure "soft constraint" in PyTorch without
         the scaler passed to the GPU, we penalize negativity of the implied medial/lateral ratio.
         """
+        if y_pred.dim() == 3:
+            # Flatten (batch, seq, features) -> (batch*seq, features) for generic processing
+            y_pred = y_pred.reshape(-1, y_pred.shape[-1])
+            y_true = y_true.reshape(-1, y_true.shape[-1])
+            
         # 1. Main Data Loss (MSE on scaled predictions vs targets)
         data_loss = self.mse(y_pred, y_true)
         

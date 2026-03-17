@@ -15,7 +15,7 @@
 ## 3. Training Loop
 - [x] Implement robust training loop (forward pass, loss compute, backprop) in PyTorch.
 - [x] Track losses (Data loss vs Physics loss).
-- [ ] Hyperparameter tuning (adjusting learning rate, batch size, and $\lambda$ weights for physics loss penalty).
+- [x] Hyperparameter tuning (adjusting learning rate, batch size, and $\lambda$ weights for physics loss penalty).
 
 ## 4. Evaluation & Visualization (For Reporting)
 - [x] Evaluate model on unseen trials.

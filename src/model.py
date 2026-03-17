@@ -3,10 +3,10 @@ import torch.nn as nn
 
 class KneePINN(nn.Module):
     """
-    Physics-Informed Neural Network to predict Knee Joint Reaction Forces (JRF).
-    Outputs 6 components (Fx, Fy, Fz, Tx, Ty, Tz) to match the eTibia target data.
+    Patient-Specific Physics-Informed Neural Network for Knee JRF Prediction.
+    Deliberately compact architecture ([32, 16]) to prevent overfitting on small datasets.
     """
-    def __init__(self, input_dim, output_dim=6, hidden_layers=[256, 256, 128, 64]):
+    def __init__(self, input_dim, output_dim=6, hidden_layers=[32, 16]):
         super(KneePINN, self).__init__()
         
         layers = []
@@ -14,14 +14,11 @@ class KneePINN(nn.Module):
         
         for h in hidden_layers:
             layers.append(nn.Linear(in_features, h))
-            layers.append(nn.ELU()) # ELU provides smoother gradients for physics loss
-            # Optional: Add Dropout or BatchNorm if overfitting
-            # layers.append(nn.Dropout(0.1))
+            layers.append(nn.BatchNorm1d(h))
+            layers.append(nn.ELU())
             in_features = h
             
         self.feature_extractor = nn.Sequential(*layers)
-        
-        # Output layer for the 6 target variables
         self.output_layer = nn.Linear(in_features, output_dim)
         
     def forward(self, x):

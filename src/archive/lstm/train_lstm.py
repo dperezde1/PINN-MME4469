@@ -13,8 +13,8 @@ def train_model():
     trial_names = ['DM_ngait_og1', 'DM_ngait_og2', 'DM_ngait_og3', 'DM_ngait_og4']
     
     epochs = 300 
-    batch_size = 16
-    learning_rate = 1e-3
+    batch_size = 32
+    learning_rate = 1e-2
     
     # User constraint: No CUDA
     device = torch.device('cpu') 
@@ -34,7 +34,7 @@ def train_model():
     model = KneePINN(input_dim=input_dim, output_dim=output_dim).to(device)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10, min_lr=1e-5, verbose=True)
-    criterion = PhysicalConstraintsLoss(lambda_physics=0.5)
+    criterion = PhysicalConstraintsLoss(lambda_physics=0.05)
     
     train_history, val_history = [], []
     best_val_loss = float('inf')

@@ -32,8 +32,9 @@ def evaluate_model():
     with torch.no_grad():
         for inputs, targets in val_loader:
             preds = model(inputs)
-            all_preds.append(preds.numpy())
-            all_trues.append(targets.numpy())
+            # Flatten LSTM sequence outputs for standard array evaluation
+            all_preds.append(preds.reshape(-1, preds.shape[-1]).numpy())
+            all_trues.append(targets.reshape(-1, targets.shape[-1]).numpy())
             
     # Flatten
     preds_scaled = np.vstack(all_preds)
@@ -118,8 +119,9 @@ def evaluate_model():
     })
     df_export.to_excel('results/SimTK_Predictions.xlsx', index=False)
     
-    # 4. Feature Importance (Weight magnitude of first layer)
-    first_layer_weights = model.feature_extractor[0].weight.data.abs().mean(dim=0).numpy()
+    # 4. Feature Importance (Weight magnitude of LSTM input-hidden weights)
+    # For LSTM, weight_ih_l0 has shape (4*hidden_size, input_size) — we average across all gates
+    first_layer_weights = model.lstm.weight_ih_l0.data.abs().mean(dim=0).numpy()
     
     # Group features by type
     emg_idx = [i for i, f in enumerate(feature_names) if 'emg' in f.lower() or f in ['semimem', 'bifem', 'recfem', 'vasmed', 'vaslat', 'medgas', 'latgas', 'soleus', 'tibant', 'perlng', 'gmax', 'gmed', 'sartorius']]

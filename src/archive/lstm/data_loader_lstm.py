@@ -4,33 +4,26 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 from sklearn.preprocessing import RobustScaler
-from sklearn.decomposition import PCA
 import joblib
-
-# Patient biometrics (DM subject from SimTK Grand Challenge)
-PATIENT_MASS_KG = 70.0
-PATIENT_HEIGHT_M = 1.72
-PATIENT_BMI = PATIENT_MASS_KG / (PATIENT_HEIGHT_M ** 2)
-PATIENT_BW = PATIENT_MASS_KG * 9.81  # Body weight in Newtons
 
 class SimTKDataset(Dataset):
     """
     PyTorch Dataset for SimTK Grand Challenge Joint Reaction Force Prediction.
-    Phase 5: Patient-specific with PCA dimensionality reduction and biometric features.
+    Loads kinematics, GRF, and EMG data as inputs, and eTibia forces/moments as targets.
+    Creates sequence chunks for LSTM.
     """
-    def __init__(self, data_dir, trial_names, n_components=25, is_train=True, 
-                 scalers=None, pca=None, scaler_save_dir='results'):
+    def __init__(self, data_dir, trial_names, seq_length=50, is_train=True, scalers=None, scaler_save_dir='results'):
         self.data_dir = data_dir
         self.trial_names = trial_names
-        self.n_components = n_components
+        self.seq_length = seq_length
         self.is_train = is_train
         self.scalers = scalers if scalers is not None else {}
-        self.pca = pca
         self.scaler_save_dir = scaler_save_dir
         
         self.inputs = []
         self.targets = []
         self.time_frames = []
+        self.trial_indices = []
         
         self._load_data()
         
@@ -43,95 +36,102 @@ class SimTKDataset(Dataset):
         all_targets = []
         
         for trial_idx, trial in enumerate(self.trial_names):
+            # Define file paths
             emg_path = os.path.join(emg_dir, f"{trial}_emg.csv")
             grf_path = os.path.join(motion_dir, f"{trial}_grf.csv")
             traj_path = os.path.join(motion_dir, f"{trial}_trajectories.csv")
             force_path = os.path.join(etibia_dir, f"{trial}_knee_forces.csv")
             
+            # Load CSVs
+            # Note: We skip missing files (some trials might be incomplete)
             if not all(os.path.exists(p) for p in [emg_path, grf_path, traj_path, force_path]):
                 print(f"Skipping {trial} due to missing files.")
                 continue
                 
+            # Load CSVs with index_col=False to prevent panda from misinterpreting trailing commas
             df_emg = pd.read_csv(emg_path, index_col=False)
             df_grf = pd.read_csv(grf_path, index_col=False)
             df_traj = pd.read_csv(traj_path, index_col=False)
             df_force = pd.read_csv(force_path, index_col=False)
             
+            # Standardize time columns for merging by renaming the FIRST dict match
             for df in [df_emg, df_grf, df_traj, df_force]:
                 time_col = next((col for col in df.columns if 'time' in col.lower()), None)
                 if time_col:
                     df.rename(columns={time_col: 'Time'}, inplace=True)
             
+            # For merge_asof or simple merge, round time to 3 decimals to align 120Hz frames
             for df in [df_emg, df_grf, df_traj, df_force]:
                 df['Time'] = df['Time'].round(3)
             
+            # Drop unneeded columns like 'Frame' or 'GON' to avoid clutter
             if 'Frame' in df_traj.columns: df_traj.drop(columns=['Frame'], inplace=True)
             if 'Frame' in df_grf.columns: df_grf.drop(columns=['Frame'], inplace=True)
             
+            # Merge dataframes on Time
             df_merged = df_emg.merge(df_grf, on='Time', how='inner')
             df_merged = df_merged.merge(df_traj, on='Time', how='inner')
             df_merged = df_merged.merge(df_force, on='Time', how='inner')
             
+            # Filter columns: inputs vs targets
+            # Targets: Fx, Fy, Fz, Tx, Ty, Tz
             target_cols = ['Fx', 'Fy', 'Fz', 'Tx', 'Ty', 'Tz']
             df_targets = df_merged[target_cols].copy()
             
+            # Inputs: everything else except 'Time' and possibly duplicate/unnecessary features
             input_cols = [c for c in df_merged.columns if c not in target_cols and c != 'Time' and c != 'GON' and c != 'GRFz_y']
             df_inputs = df_merged[input_cols].copy()
             
+            # Fill NAs
             df_inputs.fillna(0, inplace=True)
             df_targets.fillna(0, inplace=True)
             
+            # Store time for potential sequential slicing/reporting
             self.time_frames.append(df_merged['Time'].values)
+            self.trial_indices.append(np.full(len(df_merged), trial_idx))
             
             all_inputs.append(df_inputs.values)
             all_targets.append(df_targets.values)
             
         print(f"Loaded {len(all_inputs)} valid trials.")
         
+        # Concatenate all trials for scaler fitting
         concat_inputs = np.vstack(all_inputs)
         concat_targets = np.vstack(all_targets)
         
         if self.is_train:
-            # Fit scalers on raw features
+            # Fit and save scalers
             self.scalers['inputs'] = RobustScaler().fit(concat_inputs)
             self.scalers['targets'] = RobustScaler().fit(concat_targets)
-            
-        # Scale inputs FIRST, then apply PCA
-        scaled_inputs = self.scalers['inputs'].transform(concat_inputs)
-        scaled_targets = self.scalers['targets'].transform(concat_targets)
-        
-        if self.is_train:
-            # Fit PCA on scaled training inputs
-            self.pca = PCA(n_components=self.n_components)
-            pca_inputs = self.pca.fit_transform(scaled_inputs)
-            explained = np.sum(self.pca.explained_variance_ratio_) * 100
-            print(f"PCA: {concat_inputs.shape[1]} features -> {self.n_components} components ({explained:.1f}% variance retained)")
-        else:
-            pca_inputs = self.pca.transform(scaled_inputs)
-        
-        # Append patient biometric features (normalized)
-        n_samples = pca_inputs.shape[0]
-        biometrics = np.column_stack([
-            np.full(n_samples, PATIENT_MASS_KG / 100.0),   # Normalized mass
-            np.full(n_samples, PATIENT_HEIGHT_M / 2.0),     # Normalized height
-            np.full(n_samples, PATIENT_BMI / 30.0),         # Normalized BMI
-        ])
-        
-        final_inputs = np.hstack([pca_inputs, biometrics])
-        
-        if self.is_train:
             os.makedirs(self.scaler_save_dir, exist_ok=True)
             joblib.dump(self.scalers['inputs'], os.path.join(self.scaler_save_dir, 'input_scaler.pkl'))
             joblib.dump(self.scalers['targets'], os.path.join(self.scaler_save_dir, 'target_scaler.pkl'))
-            joblib.dump(self.pca, os.path.join(self.scaler_save_dir, 'pca_model.pkl'))
+            
+        # Create sequences
+        seq_inputs = []
+        seq_targets = []
         
-        self.inputs = torch.tensor(final_inputs, dtype=torch.float32)
-        self.targets = torch.tensor(scaled_targets, dtype=torch.float32)
-        self.time_frames = np.concatenate(self.time_frames)
+        for i in range(len(all_inputs)):
+            scaled_in = self.scalers['inputs'].transform(all_inputs[i])
+            scaled_out = self.scalers['targets'].transform(all_targets[i])
+            
+            if self.seq_length is not None:
+                # Overlap of 50% for training data augmentation, no overlap for validation
+                step = max(1, self.seq_length // 2) if self.is_train else self.seq_length
+                for j in range(0, len(scaled_in) - self.seq_length + 1, step):
+                    seq_inputs.append(scaled_in[j:j+self.seq_length])
+                    seq_targets.append(scaled_out[j:j+self.seq_length])
+            else:
+                seq_inputs.append(scaled_in)
+                seq_targets.append(scaled_out)
         
-        self.feature_dim = self.inputs.shape[1]
-        self.target_dim = self.targets.shape[1]
-        self.feature_names = [f"PC{i+1}" for i in range(self.n_components)] + ['Mass', 'Height', 'BMI']
+        # Convert to torch tensors
+        self.inputs = torch.tensor(np.array(seq_inputs), dtype=torch.float32)
+        self.targets = torch.tensor(np.array(seq_targets), dtype=torch.float32)
+        
+        self.feature_dim = self.inputs.shape[-1]
+        self.target_dim = self.targets.shape[-1]
+        self.feature_names = input_cols
         self.target_names = target_cols
 
     def __len__(self):
@@ -141,6 +141,11 @@ class SimTKDataset(Dataset):
         return self.inputs[idx], self.targets[idx]
 
 def create_dataloaders(data_dir, trial_names, batch_size=64, validation_split=0.2):
+    """
+    Utility function to create train and validation DataLoaders.
+    """
+    # Simple split of trial names if there are enough, otherwise sequential split
+    # For robust evaluation, it's better to leave out entire trials for validation
     num_trials = len(trial_names)
     val_size = max(1, int(num_trials * validation_split))
     
@@ -150,9 +155,8 @@ def create_dataloaders(data_dir, trial_names, batch_size=64, validation_split=0.
     print(f"Training on trials: {train_trials}")
     print(f"Validating on trials: {val_trials}")
     
-    train_dataset = SimTKDataset(data_dir, train_trials, is_train=True, n_components=25)
-    val_dataset = SimTKDataset(data_dir, val_trials, is_train=False, 
-                                scalers=train_dataset.scalers, pca=train_dataset.pca, n_components=25)
+    train_dataset = SimTKDataset(data_dir, train_trials, is_train=True, seq_length=50)
+    val_dataset = SimTKDataset(data_dir, val_trials, is_train=False, scalers=train_dataset.scalers, seq_length=50)
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
@@ -160,7 +164,9 @@ def create_dataloaders(data_dir, trial_names, batch_size=64, validation_split=0.
     return train_loader, val_loader, train_dataset.scalers
 
 if __name__ == "__main__":
-    data_dir = r"c:/Users/bennn/localSchool/PINN/PINN-MME4469/data/Overground Gait Trials"
+    # Test data loader
+    data_dir = r"c:/Users/diego/OneDrive/Documents/MME4469/PINN/data/Overground Gait Trials"
+    # Example trial names based on list_dir
     trial_names = ['DM_ngait_og1', 'DM_ngait_og2', 'DM_ngait_og3', 'DM_ngait_og4']
     train_loader, val_loader, scalers = create_dataloaders(data_dir, trial_names)
     
