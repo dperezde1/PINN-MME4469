@@ -1,6 +1,6 @@
 # PINN for JRF Prediction Walkthrough
 
-I've successfully designed and trained a Physics-Informed Neural Network (PINN) to predict Knee Joint Reaction Forces (JRF) using the SimTK Grand Challenge dataset. Here is a review of what was accomplished and the resulting model performance.
+We've successfully designed and trained a Physics-Informed Neural Network (PINN) to predict Knee Joint Reaction Forces (JRF) using the SimTK Grand Challenge dataset. Here is a review of what was accomplished and the resulting model performance.
 
 ## Project Accomplishments
 - **Robust Data Pipeline**: Created `data_loader.py` to synchronize kinematics, Ground Reaction Forces (GRF), and Electromyography (EMG) signals based on precise timestamp alignment, handling trailing commas and scaling data with `RobustScaler`.
